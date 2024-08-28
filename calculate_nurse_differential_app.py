@@ -1,6 +1,5 @@
 import streamlit as st
 from datetime import datetime, timedelta
-import plotly.express as px
 import pandas as pd
 
 # Function to determine the differential based on the time of day
