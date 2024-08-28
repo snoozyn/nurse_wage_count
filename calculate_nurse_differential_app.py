@@ -116,7 +116,7 @@ if st.session_state.work_periods:
                 unsafe_allow_html=True,
             )
         with col2:
-            if st.button("Delete", key=f"delete_{i}"):
+            if st.button("🗑️", key=f"delete_{i}"):
                 st.session_state.work_periods.pop(i)
                 st.session_state["updated"] = str(i)  # Trigger rerun by setting a dummy state variable
 
