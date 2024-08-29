@@ -72,7 +72,7 @@ def calculate_weekly_earnings(work_periods, hourly_rate, charge_nurse_pay, night
     return total_earnings, total_hours
 
 # Streamlit App
-st.title("Nurse Earnings Calculator")
+st.set_page_config(page_title="Nurse Differential Calculator")
 
 # Work Periods State Management
 if 'work_periods' not in st.session_state:
