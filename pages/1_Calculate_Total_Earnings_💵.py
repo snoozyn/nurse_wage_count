@@ -6,6 +6,8 @@ import altair as alt
 import calendar
 from dateutil.relativedelta import relativedelta
 from bs4 import BeautifulSoup
+from icalendar import Calendar, Event
+import io
 
 # Function definitions
 def determine_shift_differential(hour):
@@ -190,6 +192,7 @@ federal_tax_brackets = {
 
 # Dictionary of state tax rates (approximate highest marginal rates)
 state_tax_rates = {
+    # ... [Same as before]
     'Alabama': 5.0,
     'Alaska': 0.0,
     'Arizona': 4.50,
@@ -250,8 +253,47 @@ st.set_page_config(page_title="Nurse Differential Calculator 👩‍⚕️")
 if 'work_periods' not in st.session_state:
     st.session_state.work_periods = []
 
-# Input: work periods
-st.subheader("Enter Work Periods")
+# Input: Upload .ics file
+st.subheader("Upload Your Work Schedule (.ics File)")
+uploaded_file = st.file_uploader("Choose an .ics file", type="ics")
+
+if uploaded_file is not None:
+    try:
+        # Read and parse the .ics file
+        gcal = Calendar.from_ical(uploaded_file.read())
+        imported_periods = []
+        for component in gcal.walk():
+            if component.name == "VEVENT":
+                summary = str(component.get('summary'))
+                # Determine if this event is a work period based on summary or other criteria
+                # For this example, we'll assume all events are work periods
+                # You can add conditions to filter events as needed
+                start = component.get('dtstart').dt
+                end = component.get('dtend').dt
+
+                # Ensure start and end are datetime objects
+                if isinstance(start, date) and not isinstance(start, datetime):
+                    start = datetime.combine(start, datetime.min.time())
+                if isinstance(end, date) and not isinstance(end, datetime):
+                    end = datetime.combine(end, datetime.min.time())
+
+                # Check for all-day events
+                if start == end:
+                    end += timedelta(days=1)
+
+                # For on-call determination, check if summary contains 'On Call' (adjust as needed)
+                is_on_call = 'on call' in summary.lower()
+
+                # Check for overlapping shifts
+                if not check_overlap(start, end, st.session_state.work_periods):
+                    st.session_state.work_periods.append((start, end, is_on_call))
+                    imported_periods.append((start, end, is_on_call))
+        st.success(f"Imported {len(imported_periods)} work periods from the .ics file.")
+    except Exception as e:
+        st.error(f"An error occurred while processing the .ics file: {e}")
+
+# Input: work periods manually
+st.subheader("Or Enter Work Periods Manually")
 
 # Use columns to align inputs
 col1, col2 = st.columns(2)
