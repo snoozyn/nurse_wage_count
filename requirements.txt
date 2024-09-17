@@ -1,0 +1,6 @@
+altair==5.4.1
+beautifulsoup4==4.12.3
+icalendar==5.0.13
+pandas==2.2.2
+python_dateutil==2.9.0.post0
+streamlit==1.38.0
