@@ -2,28 +2,38 @@ import streamlit as st
 from datetime import datetime, timedelta
 from collections import defaultdict
 
-# Function to determine the differential based on the time of day
+# Function definitions
 def determine_shift_differential(hour):
     if 19 <= hour or hour < 7:
         return 'Night Shift'
     else:
         return 'Day Shift'
 
-# Function to check if the shift is on a weekend
 def is_weekend(date):
     return date.weekday() >= 5  # 5 = Saturday, 6 = Sunday
 
-# Function to check if two time periods overlap
 def check_overlap(new_start, new_end, existing_periods):
-    for start, end, _ in existing_periods:  # Ignore the third value (is_on_call)
+    for start, end, _ in existing_periods:
         if new_start < end and new_end > start:
             return True
     return False
 
-# Function to calculate the earnings for the given periods, accounting for weekly overtime
+# Function to calculate federal tax based on tax brackets
+def calculate_federal_tax(income, tax_brackets):
+    tax = 0.0
+    for bracket in tax_brackets:
+        lower_limit, upper_limit, rate = bracket
+        if income > lower_limit:
+            taxable_amount = min(income, upper_limit) - lower_limit
+            tax += taxable_amount * rate
+        else:
+            break
+    return tax
+
+# Function to calculate total earnings
 @st.cache_data
 def calculate_total_earnings(work_periods, hourly_rate, charge_nurse_pay, night_differential,
-                            weekend_differential, on_call_differential, differential_type):
+                             weekend_differential, on_call_differential, differential_type):
     hours_worked = []
     for start_time, end_time, is_on_call in work_periods:
         current_time = start_time
@@ -104,7 +114,38 @@ def calculate_total_earnings(work_periods, hourly_rate, charge_nurse_pay, night_
 
     return total_earnings, total_hours, weekly_data
 
-# Dictionary of state tax rates
+# Federal tax brackets for 2023
+federal_tax_brackets = {
+    'Single': [
+        (0, 11000, 0.10),
+        (11000, 44725, 0.12),
+        (44725, 95375, 0.22),
+        (95375, 182100, 0.24),
+        (182100, 231250, 0.32),
+        (231250, 578125, 0.35),
+        (578125, float('inf'), 0.37)
+    ],
+    'Married Filing Jointly': [
+        (0, 22000, 0.10),
+        (22000, 89450, 0.12),
+        (89450, 190750, 0.22),
+        (190750, 364200, 0.24),
+        (364200, 462500, 0.32),
+        (462500, 693750, 0.35),
+        (693750, float('inf'), 0.37)
+    ],
+    'Head of Household': [
+        (0, 15700, 0.10),
+        (15700, 59850, 0.12),
+        (59850, 95350, 0.22),
+        (95350, 182100, 0.24),
+        (182100, 231250, 0.32),
+        (231250, 578100, 0.35),
+        (578100, float('inf'), 0.37)
+    ]
+}
+
+# Dictionary of state tax rates (approximate highest marginal rates)
 state_tax_rates = {
     'Alabama': 5.0,
     'Alaska': 0.0,
@@ -160,7 +201,7 @@ state_tax_rates = {
 }
 
 # Streamlit App
-st.set_page_config(page_title="Nurse Differential Calculator")
+st.set_page_config(page_title="Nurse Differential Calculator 👩‍⚕️")
 
 # Work Periods State Management
 if 'work_periods' not in st.session_state:
@@ -187,8 +228,8 @@ if differential_type == "Percentage":
     else:
         on_call_differential = 0.0
 else:
-    night_differential = st.number_input("Night Shift Differential ($)", min_value=0.0, value=5.0)
-    weekend_differential = st.number_input("Weekend Differential ($)", min_value=0.0, value=6.50)
+    night_differential = st.number_input("Night Shift Differential ($)", min_value=0.0, value=10.0)
+    weekend_differential = st.number_input("Weekend Differential ($)", min_value=0.0, value=5.0)
     if is_on_call:
         on_call_differential = st.number_input("On-Call Differential ($)", min_value=0.0, value=5.0)
     else:
@@ -205,7 +246,10 @@ if st.button("Add Work Period"):
         st.error("The shift overlaps with an existing shift. Please check the timings.")
     else:
         st.session_state.work_periods.append((start_datetime, end_datetime, is_on_call))
-        formatted_shift = f"{start_date.strftime('%B %d')} to {end_date.strftime('%B %d')}, {shift_type} from {start_time.strftime('%I:%M %p').lower()} to {end_time.strftime('%I:%M %p').lower()}"
+        formatted_shift = (
+            f"{start_date.strftime('%B %d')} to {end_date.strftime('%B %d')}, {shift_type} from "
+            f"{start_time.strftime('%I:%M %p').lower()} to {end_time.strftime('%I:%M %p').lower()}"
+        )
         st.success(f"Work period added successfully: {formatted_shift}")
 
 # Display work periods with delete buttons
@@ -213,11 +257,15 @@ if st.session_state.work_periods:
     st.markdown("<h2 style='text-align: center; color: green;'>Work Periods:</h2>", unsafe_allow_html=True)
     for i, (start, end, is_on_call) in enumerate(st.session_state.work_periods):
         shift_type = determine_shift_differential(start.hour)
-        formatted_shift = f"{start.strftime('%B %d')} to {end.strftime('%B %d')}, {shift_type} from {start.strftime('%I:%M %p').lower()} to {end.strftime('%I:%M %p').lower()}"
+        formatted_shift = (
+            f"{start.strftime('%B %d')} to {end.strftime('%B %d')}, {shift_type} from "
+            f"{start.strftime('%I:%M %p').lower()} to {end.strftime('%I:%M %p').lower()}"
+        )
         col1, col2 = st.columns([0.9, 0.1])
         with col1:
             st.markdown(
-                f"<div style='border: 1px solid #ccc; padding: 10px; font-size: 1.2em; border-radius: 10px; margin-bottom: 10px;'>{formatted_shift}</div>",
+                f"<div style='border: 1px solid #ccc; padding: 10px; font-size: 1.2em; "
+                f"border-radius: 10px; margin-bottom: 10px;'>{formatted_shift}</div>",
                 unsafe_allow_html=True,
             )
         with col2:
@@ -231,7 +279,9 @@ hourly_rate = st.number_input("Hourly Rate ($)", min_value=0.0, value=34.45)
 # Tax Information
 st.subheader("Tax Information")
 
-federal_tax_rate = st.number_input("Federal Tax Rate (%)", min_value=0.0, max_value=100.0, value=22.0)
+# Filing Status Selection
+filing_status_options = ['Single', 'Married Filing Jointly', 'Head of Household']
+selected_filing_status = st.selectbox("Select Your Filing Status", filing_status_options)
 
 # State Selection
 state_list = sorted(state_tax_rates.keys())
@@ -246,13 +296,27 @@ if st.button("Calculate Earnings"):
         st.session_state.work_periods, hourly_rate, charge_nurse_pay,
         night_differential, weekend_differential, on_call_differential, differential_type
     )
-    total_tax_rate = (federal_tax_rate + state_tax_rate) / 100.0
-    tax_amount = total_earnings * total_tax_rate
-    post_tax_earnings = total_earnings - tax_amount
+
+    # Get the appropriate federal tax brackets based on filing status
+    tax_brackets = federal_tax_brackets[selected_filing_status]
+
+    # Calculate federal tax
+    federal_tax_amount = calculate_federal_tax(total_earnings, tax_brackets)
+
+    # Calculate state tax
+    state_tax_rate_decimal = state_tax_rate / 100.0
+    state_tax_amount = total_earnings * state_tax_rate_decimal
+
+    # Total tax amount
+    total_tax_amount = federal_tax_amount + state_tax_amount
+
+    post_tax_earnings = total_earnings - total_tax_amount
 
     st.success(f"Total hours worked: {total_hours} hours")
     st.success(f"Total pre-tax earnings for the period: ${total_earnings:.2f}")
-    st.success(f"Total tax amount: ${tax_amount:.2f}")
+    st.success(f"Federal tax amount ({selected_filing_status}): ${federal_tax_amount:.2f}")
+    st.success(f"State tax amount ({selected_state}): ${state_tax_amount:.2f}")
+    st.success(f"Total tax amount: ${total_tax_amount:.2f}")
     st.success(f"Total post-tax earnings for the period: ${post_tax_earnings:.2f}")
 
     st.subheader("Weekly Earnings Breakdown")
