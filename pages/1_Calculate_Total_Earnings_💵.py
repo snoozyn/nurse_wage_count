@@ -1,6 +1,11 @@
 import streamlit as st
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 from collections import defaultdict
+import pandas as pd
+import altair as alt
+import calendar
+from dateutil.relativedelta import relativedelta
+from bs4 import BeautifulSoup
 
 # Function definitions
 def determine_shift_differential(hour):
@@ -10,7 +15,7 @@ def determine_shift_differential(hour):
         return 'Day Shift'
 
 def is_weekend(date):
-    return date.weekday() >= 5  # 5 = Saturday, 6 = Sunday
+    return date.weekday() >= 5  # 5 = Saturday (5), 6 = Sunday (6)
 
 def check_overlap(new_start, new_end, existing_periods):
     for start, end, _ in existing_periods:
@@ -30,7 +35,7 @@ def calculate_federal_tax(income, tax_brackets):
             break
     return tax
 
-# Function to calculate total earnings
+# Function to calculate total earnings with detailed breakdown
 @st.cache_data
 def calculate_total_earnings(work_periods, hourly_rate, charge_nurse_pay, night_differential,
                              weekend_differential, on_call_differential, differential_type):
@@ -42,77 +47,115 @@ def calculate_total_earnings(work_periods, hourly_rate, charge_nurse_pay, night_
             week_start = week_start.replace(hour=0, minute=0, second=0, microsecond=0)
             differential = determine_shift_differential(current_time.hour)
             weekend = is_weekend(current_time)
-            rate = hourly_rate
+            base_rate = hourly_rate
+
+            # Initialize earnings components
+            rate = base_rate
+            base_pay = base_rate
+            night_diff_pay = 0.0
+            weekend_diff_pay = 0.0
+            on_call_diff_pay = 0.0
+            charge_nurse_pay_hour = 0.0
 
             if charge_nurse_pay > 0:
+                charge_nurse_pay_hour = charge_nurse_pay
                 rate += charge_nurse_pay
 
             if differential == 'Night Shift':
                 if differential_type == "Percentage":
-                    rate += hourly_rate * (night_differential / 100)
+                    night_diff_pay = base_rate * (night_differential / 100)
                 else:
-                    rate += night_differential
+                    night_diff_pay = night_differential
+                rate += night_diff_pay
 
             if weekend:
                 if differential_type == "Percentage":
-                    rate += hourly_rate * (weekend_differential / 100)
+                    weekend_diff_pay = base_rate * (weekend_differential / 100)
                 else:
-                    rate += weekend_differential
+                    weekend_diff_pay = weekend_differential
+                rate += weekend_diff_pay
 
             if is_on_call:
                 if differential_type == "Percentage":
-                    rate += hourly_rate * (on_call_differential / 100)
+                    on_call_diff_pay = base_rate * (on_call_differential / 100)
                 else:
-                    rate += on_call_differential
+                    on_call_diff_pay = on_call_differential
+                rate += on_call_diff_pay
 
-            hours_worked.append({'datetime': current_time, 'rate': rate, 'week_start': week_start})
+            total_hourly_rate = rate
+
+            hours_worked.append({
+                'datetime': current_time,
+                'week_start': week_start,
+                'base_pay': base_pay,
+                'charge_nurse_pay': charge_nurse_pay_hour,
+                'night_diff_pay': night_diff_pay,
+                'weekend_diff_pay': weekend_diff_pay,
+                'on_call_diff_pay': on_call_diff_pay,
+                'total_hourly_rate': total_hourly_rate
+            })
             current_time += timedelta(hours=1)
 
-    week_hours_list = defaultdict(list)
-    for hour_data in hours_worked:
-        week_start = hour_data['week_start']
-        week_hours_list[week_start].append(hour_data)
+    # Create DataFrame from hours_worked
+    df_hours = pd.DataFrame(hours_worked)
 
+    # Group by week and calculate earnings components
+    df_hours['week'] = df_hours['week_start'].dt.strftime('%Y-%U')
+    week_groups = df_hours.groupby('week')
+
+    weekly_data = []
     total_hours = 0
     total_earnings = 0
-    weekly_data = []
 
-    for week_start, hours_list in week_hours_list.items():
-        hours = len(hours_list)
-        earnings = sum([h['rate'] for h in hours_list])
+    for week, group in week_groups:
+        hours = len(group)
+        total_hours += hours
 
+        # Sum earnings components
+        base_pay = group['base_pay'].sum()
+        charge_nurse_pay_total = group['charge_nurse_pay'].sum()
+        night_diff_pay_total = group['night_diff_pay'].sum()
+        weekend_diff_pay_total = group['weekend_diff_pay'].sum()
+        on_call_diff_pay_total = group['on_call_diff_pay'].sum()
+        total_weekly_pay = group['total_hourly_rate'].sum()
+
+        # Overtime calculations
         if hours > 40:
-            # Sort hours by time to identify overtime hours
-            hours_list = sorted(hours_list, key=lambda x: x['datetime'])
-            regular_hours_list = hours_list[:40]
-            overtime_hours_list = hours_list[40:]
-
-            regular_earnings = sum([h['rate'] for h in regular_hours_list])
-            overtime_earnings = sum([h['rate'] * 1.5 for h in overtime_hours_list])  # 1.5x for overtime
-            week_total_earnings = regular_earnings + overtime_earnings
-
             regular_hours = 40
             overtime_hours = hours - 40
+
+            # Calculate regular earnings
+            regular_earnings = group.iloc[:40]['total_hourly_rate'].sum()
+
+            # Calculate overtime earnings at 1.5x rate
+            overtime_rates = group.iloc[40:]['total_hourly_rate'] * 1.5
+            overtime_earnings = overtime_rates.sum()
+
+            total_weekly_pay = regular_earnings + overtime_earnings
         else:
             regular_hours = hours
             overtime_hours = 0
-            regular_earnings = earnings
-            overtime_earnings = 0
-            week_total_earnings = earnings
+            regular_earnings = total_weekly_pay
+            overtime_earnings = 0.0
 
-        total_hours += hours
-        total_earnings += week_total_earnings
+        total_earnings += total_weekly_pay
 
         weekly_data.append({
-            'week_start': week_start,
+            'week': week,
+            'week_start': group['week_start'].iloc[0],
             'regular_hours': regular_hours,
             'overtime_hours': overtime_hours,
+            'base_pay': base_pay,
+            'charge_nurse_pay': charge_nurse_pay_total,
+            'night_diff_pay': night_diff_pay_total,
+            'weekend_diff_pay': weekend_diff_pay_total,
+            'on_call_diff_pay': on_call_diff_pay_total,
             'regular_earnings': regular_earnings,
             'overtime_earnings': overtime_earnings,
-            'week_total_earnings': week_total_earnings
+            'total_weekly_pay': total_weekly_pay
         })
 
-    return total_earnings, total_hours, weekly_data
+    return total_earnings, total_hours, weekly_data, df_hours
 
 # Federal tax brackets for 2023
 federal_tax_brackets = {
@@ -210,10 +253,15 @@ if 'work_periods' not in st.session_state:
 # Input: work periods
 st.subheader("Enter Work Periods")
 
-start_date = st.date_input("Start Date")
-start_time = st.time_input("Start Time")
-end_date = st.date_input("End Date", value=start_date)
-end_time = st.time_input("End Time")
+# Use columns to align inputs
+col1, col2 = st.columns(2)
+
+with col1:
+    start_date = st.date_input("Start Date")
+    start_time = st.time_input("Start Time")
+with col2:
+    end_date = st.date_input("End Date", value=start_date)
+    end_time = st.time_input("End Time")
 
 is_on_call = st.checkbox("On Call?")
 
@@ -237,20 +285,37 @@ else:
 
 charge_nurse_pay = st.number_input("Charge Nurse Pay ($)", min_value=0.0, value=0.0)
 
-if st.button("Add Work Period"):
-    start_datetime = datetime.combine(start_date, start_time)
-    end_datetime = datetime.combine(end_date, end_time)
-    shift_type = determine_shift_differential(start_time.hour)
+# Real-time validation for date and time inputs
+validation_errors = []
 
-    if check_overlap(start_datetime, end_datetime, st.session_state.work_periods):
-        st.error("The shift overlaps with an existing shift. Please check the timings.")
-    else:
-        st.session_state.work_periods.append((start_datetime, end_datetime, is_on_call))
-        formatted_shift = (
-            f"{start_date.strftime('%B %d')} to {end_date.strftime('%B %d')}, {shift_type} from "
-            f"{start_time.strftime('%I:%M %p').lower()} to {end_time.strftime('%I:%M %p').lower()}"
-        )
-        st.success(f"Work period added successfully: {formatted_shift}")
+# Combine dates and times into datetime objects
+start_datetime = datetime.combine(start_date, start_time)
+end_datetime = datetime.combine(end_date, end_time)
+
+# Check if end datetime is after start datetime
+if end_datetime <= start_datetime:
+    validation_errors.append("End date and time must be after the start date and time.")
+
+# Check for overlapping shifts
+if check_overlap(start_datetime, end_datetime, st.session_state.work_periods):
+    validation_errors.append("This shift overlaps with an existing shift.")
+
+# Display validation errors
+if validation_errors:
+    for error in validation_errors:
+        st.error(error)
+else:
+    # Show a preview of the shift
+    shift_type = determine_shift_differential(start_time.hour)
+    formatted_shift = (
+        f"{start_date.strftime('%B %d')} to {end_date.strftime('%B %d')}, {shift_type} from "
+        f"{start_time.strftime('%I:%M %p').lower()} to {end_time.strftime('%I:%M %p').lower()}"
+    )
+    st.info(f"Shift to be added: {formatted_shift}")
+
+if st.button("Add Work Period", disabled=bool(validation_errors)):
+    st.session_state.work_periods.append((start_datetime, end_datetime, is_on_call))
+    st.success(f"Work period added successfully: {formatted_shift}")
 
 # Display work periods with delete buttons
 if st.session_state.work_periods:
@@ -292,43 +357,145 @@ st.write(f"State Tax Rate for {selected_state}: {state_tax_rate}%")
 
 # Calculate earnings
 if st.button("Calculate Earnings"):
-    total_earnings, total_hours, weekly_data = calculate_total_earnings(
-        st.session_state.work_periods, hourly_rate, charge_nurse_pay,
-        night_differential, weekend_differential, on_call_differential, differential_type
-    )
+    if not st.session_state.work_periods:
+        st.error("Please add at least one work period before calculating earnings.")
+    else:
+        total_earnings, total_hours, weekly_data, df_hours = calculate_total_earnings(
+            st.session_state.work_periods, hourly_rate, charge_nurse_pay,
+            night_differential, weekend_differential, on_call_differential, differential_type
+        )
 
-    # Get the appropriate federal tax brackets based on filing status
-    tax_brackets = federal_tax_brackets[selected_filing_status]
+        # Get the appropriate federal tax brackets based on filing status
+        tax_brackets = federal_tax_brackets[selected_filing_status]
 
-    # Calculate federal tax
-    federal_tax_amount = calculate_federal_tax(total_earnings, tax_brackets)
+        # Calculate federal tax
+        federal_tax_amount = calculate_federal_tax(total_earnings, tax_brackets)
 
-    # Calculate state tax
-    state_tax_rate_decimal = state_tax_rate / 100.0
-    state_tax_amount = total_earnings * state_tax_rate_decimal
+        # Calculate state tax
+        state_tax_rate_decimal = state_tax_rate / 100.0
+        state_tax_amount = total_earnings * state_tax_rate_decimal
 
-    # Total tax amount
-    total_tax_amount = federal_tax_amount + state_tax_amount
+        # Total tax amount
+        total_tax_amount = federal_tax_amount + state_tax_amount
 
-    post_tax_earnings = total_earnings - total_tax_amount
+        post_tax_earnings = total_earnings - total_tax_amount
 
-    st.success(f"Total hours worked: {total_hours} hours")
-    st.success(f"Total pre-tax earnings for the period: ${total_earnings:.2f}")
-    st.success(f"Federal tax amount ({selected_filing_status}): ${federal_tax_amount:.2f}")
-    st.success(f"State tax amount ({selected_state}): ${state_tax_amount:.2f}")
-    st.success(f"Total tax amount: ${total_tax_amount:.2f}")
-    st.success(f"Total post-tax earnings for the period: ${post_tax_earnings:.2f}")
+        st.success(f"Total hours worked: {total_hours} hours")
+        st.success(f"Total pre-tax earnings for the period: ${total_earnings:.2f}")
+        st.success(f"Federal tax amount ({selected_filing_status}): ${federal_tax_amount:.2f}")
+        st.success(f"State tax amount ({selected_state}): ${state_tax_amount:.2f}")
+        st.success(f"Total tax amount: ${total_tax_amount:.2f}")
+        st.success(f"Total post-tax earnings for the period: ${post_tax_earnings:.2f}")
 
-    st.subheader("Weekly Earnings Breakdown")
-    for data in weekly_data:
-        week_end = data['week_start'] + timedelta(days=6)
-        week_range = f"{data['week_start'].strftime('%b %d')} - {week_end.strftime('%b %d')}"
-        st.markdown(f"**Week of {week_range}:**")
-        st.markdown(f"- Regular Hours: {data['regular_hours']} hours")
-        st.markdown(f"- Overtime Hours: {data['overtime_hours']} hours")
-        st.markdown(f"- Regular Earnings: ${data['regular_earnings']:.2f}")
-        st.markdown(f"- Overtime Earnings: ${data['overtime_earnings']:.2f}")
-        st.markdown(f"- Total Earnings: ${data['week_total_earnings']:.2f}")
-        st.markdown("---")
+        st.subheader("Weekly Earnings Breakdown")
+        for data in weekly_data:
+            week_end = data['week_start'] + timedelta(days=6)
+            week_range = f"{data['week_start'].strftime('%b %d')} - {week_end.strftime('%b %d')}"
+            st.markdown(f"**Week of {week_range}:**")
+            st.markdown(f"- Regular Hours: {data['regular_hours']} hours")
+            st.markdown(f"- Overtime Hours: {data['overtime_hours']} hours")
+            st.markdown(f"- Base Pay: ${data['base_pay']:.2f}")
+            if data['charge_nurse_pay'] > 0:
+                st.markdown(f"- Charge Nurse Pay: ${data['charge_nurse_pay']:.2f}")
+            if data['night_diff_pay'] > 0:
+                st.markdown(f"- Night Differential Pay: ${data['night_diff_pay']:.2f}")
+            if data['weekend_diff_pay'] > 0:
+                st.markdown(f"- Weekend Differential Pay: ${data['weekend_diff_pay']:.2f}")
+            if data['on_call_diff_pay'] > 0:
+                st.markdown(f"- On-Call Differential Pay: ${data['on_call_diff_pay']:.2f}")
+            st.markdown(f"- Regular Earnings: ${data['regular_earnings']:.2f}")
+            st.markdown(f"- Overtime Earnings: ${data['overtime_earnings']:.2f}")
+            st.markdown(f"- Total Earnings: ${data['total_weekly_pay']:.2f}")
+            st.markdown("---")
 
-    st.info("**Disclaimer:** Tax calculations are estimates and may not reflect your actual tax liability. Please consult a tax professional for accurate information.")
+        st.info("**Disclaimer:** Tax calculations are estimates and may not reflect your actual tax liability. Please consult a tax professional for accurate information.")
+
+        # Visualization: Bar Chart of Earnings per Week
+        st.subheader("Earnings Breakdown per Week")
+
+        # Prepare data for bar chart
+        df_weekly = pd.DataFrame(weekly_data)
+        df_melted = df_weekly.melt(
+            id_vars=['week'],
+            value_vars=['base_pay', 'charge_nurse_pay', 'night_diff_pay', 'weekend_diff_pay', 'on_call_diff_pay', 'overtime_earnings'],
+            var_name='Earning Type',
+            value_name='Amount'
+        )
+
+        # Map earning types to more readable labels
+        earning_type_labels = {
+            'base_pay': 'Base Pay',
+            'charge_nurse_pay': 'Charge Nurse Pay',
+            'night_diff_pay': 'Night Differential',
+            'weekend_diff_pay': 'Weekend Differential',
+            'on_call_diff_pay': 'On-Call Differential',
+            'overtime_earnings': 'Overtime Pay'
+        }
+        df_melted['Earning Type'] = df_melted['Earning Type'].map(earning_type_labels)
+
+        # Create the stacked bar chart
+        chart = alt.Chart(df_melted).mark_bar().encode(
+            x=alt.X('week:N', title='Week'),
+            y=alt.Y('Amount:Q', title='Earnings ($)', stack='zero'),
+            color=alt.Color('Earning Type:N', legend=alt.Legend(title="Earning Components")),
+            tooltip=['week', 'Earning Type', 'Amount']
+        ).properties(
+            width=700,
+            height=400
+        )
+
+        st.altair_chart(chart, use_container_width=True)
+
+        # Visualization: Calendar View of Work Periods
+        st.subheader("Work Periods Calendar View")
+
+        # Gather all dates with work periods
+        work_dates = []
+        for start, end, is_on_call in st.session_state.work_periods:
+            current_date = start.date()
+            end_date = end.date()
+            while current_date <= end_date:
+                work_dates.append(current_date)
+                current_date += timedelta(days=1)
+
+        work_dates = list(set(work_dates))  # Remove duplicates
+        work_dates.sort()
+
+        if work_dates:
+            # Generate calendars for all months that have work dates
+            min_date = work_dates[0].replace(day=1)
+            max_date = work_dates[-1].replace(day=1)
+
+            months = []
+            current_month = min_date
+            while current_month <= max_date:
+                months.append(current_month)
+                current_month += relativedelta(months=1)
+
+            # Create HTML calendars
+            calendars_html = ""
+            for month in months:
+                cal = calendar.HTMLCalendar(calendar.SUNDAY)
+                # Corrected line here
+                month_html = cal.formatmonth(month.year, month.month)
+                soup = BeautifulSoup(month_html, 'html.parser')
+
+                # Highlight work dates
+                for day in soup.find_all('td'):
+                    if day.text:
+                        try:
+                            day_number = int(day.text)
+                            date_obj = date(month.year, month.month, day_number)
+                            if date_obj in work_dates:
+                                day['style'] = 'background-color: #90EE90; font-weight: bold;'
+                        except ValueError:
+                            continue  # Skip if day.text is not a number
+
+                # Add month title
+                month_title = f"<h3 style='text-align:center;'>{month.strftime('%B %Y')}</h3>"
+                calendars_html += month_title + str(soup)
+
+            # Display the calendars
+            st.components.v1.html(calendars_html, height=600, scrolling=True)
+        else:
+            st.write("No work periods to display on the calendar.")
